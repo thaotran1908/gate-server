@@ -1,5 +1,6 @@
 package com.baitap.gate;
 
+import com.sun.net.httpserver.HttpServer;
 import com.baitap.gate.coordinator.CoordinatorClient;
 import com.baitap.gate.db.GateDatabase;
 import com.baitap.gate.model.JobPayload;
@@ -8,8 +9,11 @@ import com.zaxxer.hikari.HikariDataSource;
 
 import java.io.IOException;
 import java.io.InputStream;
+import java.net.InetSocketAddress;
+import java.nio.charset.StandardCharsets;
 import java.util.Optional;
 import java.util.Properties;
+import java.util.concurrent.Executors;
 
 public class GateMain {
 
@@ -32,6 +36,26 @@ public class GateMain {
                 3
         );
 
+        int port = parseInt(System.getenv("PORT"), 8080);
+        HttpServer httpServer = HttpServer.create(new InetSocketAddress("0.0.0.0", port), 0);
+        httpServer.createContext("/health", exchange -> {
+            byte[] body = "OK".getBytes(StandardCharsets.UTF_8);
+            exchange.getResponseHeaders().add("Content-Type", "text/plain; charset=utf-8");
+            exchange.sendResponseHeaders(200, body.length);
+            exchange.getResponseBody().write(body);
+            exchange.close();
+        });
+        httpServer.createContext("/", exchange -> {
+            byte[] body = "OK".getBytes(StandardCharsets.UTF_8);
+            exchange.getResponseHeaders().add("Content-Type", "text/plain; charset=utf-8");
+            exchange.sendResponseHeaders(200, body.length);
+            exchange.getResponseBody().write(body);
+            exchange.close();
+        });
+        httpServer.setExecutor(Executors.newFixedThreadPool(2));
+        httpServer.start();
+        System.out.println("Gate HTTP server đang lắng nghe ở 0.0.0.0:" + port);
+
         String jdbcUrl = firstNonBlank(System.getenv("DB_URL"), System.getenv("JDBC_URL"), props.getProperty("db.url"));
         String dbUser = firstNonBlank(System.getenv("DB_USER"), props.getProperty("db.user"));
         String dbPassword = firstNonBlank(System.getenv("DB_PASSWORD"), props.getProperty("db.password"));
@@ -42,7 +66,7 @@ public class GateMain {
 
         HikariConfig hc = new HikariConfig();
         hc.setJdbcUrl(jdbcUrl.trim());
-        if (dbUser != null) {
+if (dbUser != null) {
             hc.setUsername(dbUser);
         }
         if (dbPassword != null) {
@@ -56,7 +80,18 @@ public class GateMain {
         CoordinatorClient coordinator = new CoordinatorClient(coordinatorUrl);
         System.out.println("Cổng " + gateId + " đang hoạt động; thời gian xử lý là " + processSeconds + " giây");
 
-        Runtime.getRuntime().addShutdownHook(new Thread(ds::close));
+        Runtime.getRuntime().addShutdownHook(new Thread(() -> {
+            try {
+                httpServer.stop(1);
+            } catch (Exception ignored) {
+                // Best-effort stop for shutdown.
+            }
+            try {
+                ds.close();
+            } catch (Exception ignored) {
+                // Best-effort close for shutdown.
+            }
+        }));
 
         long idleSleepMs = 500;
         while (true) {
